@@ -22,10 +22,8 @@ import android.widget.TextView;
 
 import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.Arguments;
-import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
-import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.Promise;
@@ -57,14 +55,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
-public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements ActivityEventListener, LifecycleEventListener{
-
+public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements ActivityEventListener {
     private static final String TAG = "RNKakaoLoginModule";
     private final ReactApplicationContext reactContext;
-    public static SessionCallback callback;
-
     private static Promise loginPromise;
-    private static boolean hasInit; // becomes true after KakaoSDK.init() is called
 
     private static void loginResolver(WritableMap result){
         if(loginPromise != null){
@@ -177,7 +171,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
             profileMap.put("birthday", kakaoAccount.getBirthday());
             profileMap.put("display_id", kakaoAccount.getDisplayId());
             profileMap.put("phone_number", kakaoAccount.getPhoneNumber());
-            profileMap.put("age_range", kakaoAccount.getAgeRange().getValue());
         }
 
         return profileMap;
@@ -258,8 +251,8 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
     }
 
     public void openSession(final AuthType authType) {
-        if (reactContext.getCurrentActivity() == null) {
-            Log.d(TAG, "getCurrentActivity is null.");
+        if (reactContext.hasCurrentActivity()) {
+            Log.d(TAG, "current activity is null.");
         }
         Session.getCurrentSession().open(authType, reactContext.getCurrentActivity());
     }
@@ -267,23 +260,60 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
     public RNKakaoLoginsModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
+        this.reactContext.addActivityEventListener(this);
     }
 
-    private void initKakaoSDK() {
-        if (hasInit) {
-            return;
-        }
+    /** SDK 는 Activity 가 아닌, Application 의 LifeCycle과 함께 사용하도록 권장 **/
+    public static void initKakaoSDK(Context context) {
         if (KakaoSDK.getAdapter() == null) {
-            KakaoSDK.init(new KakaoSDKAdapter(reactContext.getApplicationContext()));
+            KakaoSDK.init(new KakaoSDKAdapter(context));
         } else {
             Session.getCurrentSession().clearCallbacks();
         }
-        reactContext.addActivityEventListener(this);
-        reactContext.addLifecycleEventListener(this);
-        callback = new SessionCallback();
-        Session.getCurrentSession().addCallback(callback);
+
+        Session.getCurrentSession().addCallback(new SessionCallback());
         Session.getCurrentSession().checkAndImplicitOpen();
-        hasInit = true;
+    }
+
+    public static class SessionCallback implements ISessionCallback {
+        @Override
+        public void onSessionOpened() {
+            WritableMap result = Arguments.createMap();
+            SimpleDateFormat transFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+            result.putString("accessToken", Session.getCurrentSession().getTokenInfo().getAccessToken());
+            result.putString("refreshToken", Session.getCurrentSession().getTokenInfo().getRefreshToken());
+            result.putString("accessTokenExpiresAt", transFormat.format(Session.getCurrentSession().getTokenInfo().accessTokenExpiresAt()));
+            result.putString("refreshTokenExpiresAt", transFormat.format(Session.getCurrentSession().getTokenInfo().refreshTokenExpiresAt()));
+
+            loginResolver(result);
+        }
+
+        @Override
+        public void onSessionOpenFailed(KakaoException exception) {
+            if(exception != null) {
+                Log.e(TAG, "Login::SessionOpenFailed\n" + exception);
+                loginRejecter(exception);
+            }
+        }
+    }
+
+    /**
+     * ActivityEventListener.onActivityResult
+     * Kakao Activity 에서 결과를 반환받아 KakaoSDK 로 전달한다.
+     **/
+    @Override
+    public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
+        if (Session.getCurrentSession().handleActivityResult(requestCode, resultCode, data)) {
+            return;
+        }
+    }
+
+    /**
+     * ActivityEventListener.onNewIntent
+     **/
+    @Override
+    public void onNewIntent(Intent intent) {
     }
 
     @Override
@@ -293,7 +323,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
 
     @ReactMethod
     private void login(Promise promise) {
-        initKakaoSDK();
         loginPromise = promise;
 
         if (getAuthTypes().size() == 1) {
@@ -301,6 +330,13 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
         } else {
             final Item[] authItems = createAuthItemArray(getAuthTypes());
             ListAdapter adapter = createLoginAdapter(authItems);
+
+            // createLoginDialog needs valid activity
+            if(!reactContext.hasCurrentActivity()){
+                promise.reject("E_INVALID_ACTIVITY", "액티비티가 존재하지 않습니다.");
+                return;
+            }
+
             final Dialog dialog = createLoginDialog(authItems, adapter, promise);
             dialog.show();
         }
@@ -308,7 +344,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
 
     @ReactMethod
     private void logout(final Promise promise) {
-        initKakaoSDK();
         UserManagement.getInstance().requestLogout(new LogoutResponseCallback() {
             @Override
             public void onSessionClosed(ErrorResult error) {
@@ -325,7 +360,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
 
     @ReactMethod
     private void getProfile(final Promise promise) {
-        initKakaoSDK();
         UserManagement.getInstance().me(new MeV2ResponseCallback() {
             @Override
             public void onSessionClosed(ErrorResult error) {
@@ -365,7 +399,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
                     profile.putString("birthday", nullableAccount.get("birthday"));
                     profile.putString("display_id", nullableAccount.get("display_id"));
                     profile.putString("phone_number", nullableAccount.get("phone_number"));
-                    profile.putString("age_range", nullableAccount.get("age_range"));
                     promise.resolve(profile);
                 } catch (Exception e) {
                     promise.reject("E_UNKOWN", e.getMessage(), e);
@@ -377,7 +410,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
 
     @ReactMethod
     private void unlink(final Promise promise) {
-        initKakaoSDK();
         UserManagement.getInstance()
                 .requestUnlink(new UnLinkResponseCallback() {
                     @Override
@@ -399,7 +431,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
 
     @ReactMethod
     private void updateScopes(final ReadableArray scopes, final Promise promise) {
-        initKakaoSDK();
         List<String> targetScopes = new ArrayList<String>();
         for (Object scopeObj : scopes.toArrayList()) {
             String scope = scopeObj.toString();
@@ -429,7 +460,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
 
     @ReactMethod
     private void getTokens(final Promise promise) {
-        initKakaoSDK();
         AuthService.getInstance()
                 .requestAccessTokenInfo(new ApiResponseCallback<AccessTokenInfoResponse>() {
                     @Override
@@ -450,72 +480,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
                         promise.resolve(tokenInfo);
                     }
                 });
-    }
-
-
-    public static class SessionCallback implements ISessionCallback {
-        @Override
-        public void onSessionOpened() {
-            WritableMap result = Arguments.createMap();
-            SimpleDateFormat transFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-
-            result.putString("accessToken", Session.getCurrentSession().getTokenInfo().getAccessToken());
-            result.putString("refreshToken", Session.getCurrentSession().getTokenInfo().getRefreshToken());
-            result.putString("accessTokenExpiresAt", transFormat.format(Session.getCurrentSession().getTokenInfo().accessTokenExpiresAt()));
-            result.putString("refreshTokenExpiresAt", transFormat.format(Session.getCurrentSession().getTokenInfo().refreshTokenExpiresAt()));
-
-            loginResolver(result);
-        }
-
-        @Override
-        public void onSessionOpenFailed(KakaoException exception) {
-            if(exception != null) {
-                Log.e(TAG, "Login::SessionOpenFailed\n" + exception);
-                loginRejecter(exception);
-            }
-        }
-    }
-
-    @Override
-    public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
-        if (!hasInit) {
-            return;
-        }
-        if (Session.getCurrentSession().handleActivityResult(requestCode, resultCode, data)){
-            return;
-        }
-    }
-
-    @Override
-    public void onNewIntent(Intent intent) {
-
-    }
-
-    @Override
-    public void onHostDestroy() {
-        if (!hasInit) {
-            return;
-        }
-        Session.getCurrentSession().removeCallback(this.callback);
-    }
-
-    @Override
-    public void onHostPause() {
-
-    }
-
-    @Override
-    public void onHostResume() {
-        if (!hasInit) {
-            return;
-        }
-        if (KakaoSDK.getAdapter() == null) {
-            KakaoSDK.init(new KakaoSDKAdapter(reactContext.getApplicationContext()));
-            reactContext.addActivityEventListener(this);
-            callback = new SessionCallback();
-        }
-        Session.getCurrentSession().addCallback(callback);
-        Session.getCurrentSession().checkAndImplicitOpen();
     }
 
     public static String getLoginErrorCode(KakaoException exception) {
@@ -540,7 +504,6 @@ public class RNKakaoLoginsModule extends ReactContextBaseJavaModule implements A
                 return "E_KAKAOTALK_NOT_INSTALLED";
             default:
                 return "E_UNKNOWN";
-
         }
     }
 }
