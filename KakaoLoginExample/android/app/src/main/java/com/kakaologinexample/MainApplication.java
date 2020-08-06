@@ -11,6 +11,8 @@ import com.facebook.react.ReactNativeHost;
 import com.facebook.react.ReactPackage;
 import com.facebook.soloader.SoLoader;
 
+import com.dooboolab.kakaologins.RNKakaoLoginsModule;
+
 import java.util.List;
 
 public class MainApplication extends Application implements ReactApplication {
@@ -45,5 +47,6 @@ public class MainApplication extends Application implements ReactApplication {
   public void onCreate() {
     super.onCreate();
     SoLoader.init(this, /* native exopackage */ false);
+    RNKakaoLoginsModule.initKakaoSDK(this);
   }
 }
